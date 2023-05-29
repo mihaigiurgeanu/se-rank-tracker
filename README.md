@@ -16,7 +16,7 @@ Prerequisites
 In ordet to build you need to have installed
 
 *   gcc with g++ compiler.
-*   [FLTL](https://www.fltk.org) library.
+*   [FLTK](https://www.fltk.org) library.
 
 How to build
 ------------
