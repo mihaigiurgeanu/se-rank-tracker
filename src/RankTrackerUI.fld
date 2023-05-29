@@ -1,0 +1,1219 @@
+# data file for the Fltk User Interface Designer (fluid)
+version 1.0305
+header_name {.hh}
+code_name {.cc}
+decl {\#include <cassert>} {private global
+}
+
+decl {\#include "preferences.h"} {private global
+}
+
+Function {show_about_dlg(Fl_Widget *not_used, void *dlg_wnd)} {
+  comment {Callback called form the OS X specific menu
+to display the About Dialog} open return_type void
+} {
+  code {assert(dlg_wnd != NULL);
+((Fl_Window *)dlg_wnd)->show();} {}
+}
+
+Function {refresh_summary_table_cb(void *summary_table)} {
+  comment {Callback refreshing the summary table} open return_type void
+} {
+  code {((ranktracker::ui::DomainSummaryTable *)summary_table)->refresh_view();} {}
+}
+
+Function {load_chart_data_cb(void *app)} {
+  comment {Callback to refresh the chart's data} open return_type void
+} {
+  code {// -*- mode:prog -*-
+((RankTrackerUI *)app)->load_chart_data();} {}
+}
+
+Function {chart_click_cb(Fl_Widget *w, void *data)} {
+  comment {Called when a chart point was clicked} open return_type void
+} {
+  code {// -*- mode: prog -*-
+using namespace ranktracker::ui;
+BOOST_LOG_TRIVIAL(trace) << "chart click";
+
+Chart<ranktracker::data::Ranking> const *chart = (Chart<ranktracker::data::Ranking> *)w;
+Chart_Entry<ranktracker::data::Ranking> *point = chart->release_point();
+ranktracker::ui::RankURLTable *tbl = ((RankTrackerUI *)data)->chart_details_table;
+auto &db = ((RankTrackerUI *)data)->db;
+auto &keywords_list = ((RankTrackerUI *)data)->keywords_list;
+auto &selected_domain = ((RankTrackerUI *)data)->selected_domain;
+auto &selected_kwd = ((RankTrackerUI *)data)->selected_kwd;
+
+static ranktracker::data::Ranking p;
+
+assert(selected_domain != nullptr);
+auto d = (Domain *)selected_domain->user_data();
+assert(d != nullptr);
+
+assert(selected_kwd != nullptr);
+assert((long)selected_kwd->user_data() >= 0);
+assert((long)selected_kwd->user_data() < keywords_list.size());
+auto const &k = keywords_list[(long)selected_kwd->user_data()];
+
+if(point) {
+  tbl->rank_info(&point->data);
+
+  if(d->engines().empty()) {
+    BOOST_LOG_TRIVIAL(trace) << "current domain has no engines defined";
+    tbl->prev_rank_info(nullptr);
+  } else {
+    auto const &e = *d->engines().begin();
+    try {
+      ranktracker::persistence::create_transaction t(&db);
+      p = db.prev_ranking(k, *e, point->data);
+
+      if(p._rank < 0) {
+        tbl->prev_rank_info(nullptr);
+      } else {
+        tbl->prev_rank_info(&p);
+      }
+
+      t.commit();
+    } catch (...) {
+      BOOST_LOG_TRIVIAL(warning) << "could not get the previous ranking";
+      tbl->prev_rank_info(nullptr);
+    }
+  }
+  tbl->rows(1);
+  tbl->redraw();
+}} {}
+}
+
+class RankTrackerUI {
+  comment {Application's UI logic} open : {ranktracker::controller::AbstractController}
+} {
+  decl {enum selection_type {CRT_NONE, CRT_CATEGORY, CRT_ALL, CRT_DOMAIN, CRT_KEYWORD } current_selection;} {
+    comment {current_selection - the type of currently selected UI component} private local
+  }
+  decl {enum {ACTION_NONE, ACTION_ADD, ACTION_EDIT} user_action;} {
+    comment {user_action - The action for the settings windows.
+The settings windows are for add or update,
+and this sets the type of button pressed by
+the user: either add or update.} private local
+  }
+  Function {RankTrackerUI()} {} {
+    code {ranktracker::persistence::create_transaction transaction(&db, MDB_RDONLY);} {}
+    Fl_Window app {
+      label {Brand That Name Google Rank Checker} open
+      private xywh {563 162 818 647} type Double box THIN_UP_BOX hide resizable
+    } {
+      Fl_Group {} {
+        comment {Tool buttons}
+        xywh {10 12 800 48} box ENGRAVED_BOX
+      } {
+        Fl_Button {} {
+          callback {user_action = ACTION_ADD;
+
+switch(current_selection) {
+case CRT_NONE:
+case CRT_ALL:
+  domain_name->value("");
+  domain_engines->clear();
+  {
+    using namespace ranktracker::controller::domain::settings;
+    auto engines = ranktracker::engine::search_engines();
+    EnginesMenuAddr<Fl_Menu_Button> adder(domain_add_engine_btn, add_engine_cb<Fl_Browser>);
+    std::for_each(engines.begin(), engines.end(), adder);
+  }
+  domain_keywords->text("Monica e iubita mea\\nsi o iubesc mult");
+  domain_keywords->text("");
+  domain_settings_dlg->show();
+  break;
+case CRT_CATEGORY:
+  category_name->value("");
+  category_settings_dlg->show();
+  break;
+case CRT_DOMAIN:
+case CRT_KEYWORD:
+  keyword_keywords->text("");
+  keyword_settings_dlg->show();
+  break;
+}}
+          comment {ADD button}
+          tooltip {New Profile} image {../img/Plus.png} xywh {15 15 40 40} box THIN_UP_BOX
+          code0 {\#include <algorithm>}
+        }
+        Fl_Button {} {
+          callback {switch(current_selection) {
+case CRT_NONE:
+  BOOST_LOG_TRIVIAL(trace) << "Delete button pressed but nothing is selected\\n";
+  break;
+case CRT_ALL:
+  BOOST_LOG_TRIVIAL(trace) << "Delete button pressed, ALL selected\\n";
+  break;
+case CRT_DOMAIN:
+  BOOST_LOG_TRIVIAL(trace) << "Delete button pressed for domain\\n";
+  if(selected_domain) {
+    auto *d = (ranktracker::data::Domain *)selected_domain->user_data();
+    assert(d != NULL);
+    try {
+      ranktracker::persistence::create_transaction trans(&db);
+      db.deleteDomain(*d);
+      trans.commit();
+      tree->remove(selected_domain);
+      selected_domain = NULL;
+      selected_kwd = NULL;
+      current_selection = CRT_NONE;
+
+      update_current_selection_for_tree();
+      tree->redraw();
+    } catch (...) {
+      fl_alert("Can not delete domain");
+    }
+  }
+  break;
+case CRT_CATEGORY:
+  BOOST_LOG_TRIVIAL(trace) << "Delete button pressed for category\\n";
+  break;
+case CRT_KEYWORD:
+  BOOST_LOG_TRIVIAL(trace) << "Delete button pressed for keyword\\n";
+  assert(selected_kwd != NULL);
+  unsigned long i = (unsigned long)((Fl_Tree_Item *)selected_kwd)->user_data();
+  assert(i < keywords_list.size());
+  assert(selected_domain != NULL);
+  auto *d = (ranktracker::data::Domain *)selected_domain->user_data();
+  assert(d != NULL);
+
+  switch (fl_choice("Deleting a keyword ('%s')\\n\\nThis will permanently delete the ranking history of the keyword. Do you want to continue?",
+          "Yes", "No", NULL,
+          keywords_list[i].value().c_str())) {
+  case 0:
+    try {
+      ranktracker::persistence::create_transaction trans(&db);
+      db.deleteKeyword(keywords_list[i], *d);
+      tree->remove(selected_kwd);
+      selected_kwd = NULL;
+      current_selection = CRT_NONE;
+      trans.commit();
+
+      update_current_selection_for_tree();
+      tree->redraw();
+    } catch (...) {
+      fl_alert("Can not delete keyword '%s'", keywords_list[i].value().c_str());
+    }
+    break;
+  default:
+    break;
+  }
+  break;
+}}
+          comment {Delete button}
+          tooltip {Remove Profile} image {../img/Delete.png} xywh {60 15 40 40} box THIN_UP_BOX labelfont 1
+          code0 {\#include <FL/fl_ask.H>}
+        }
+        Fl_Button button_refresh {
+          callback {using namespace ranktracker::data;
+using namespace ranktracker::persistence;
+if(selected_kwd != nullptr) {
+  // update ranking for keyword
+
+  assert(selected_domain != NULL);
+  assert(selected_domain != tree->root());
+
+  assert((long)selected_kwd->user_data() >= 0);
+  assert((long)selected_kwd->user_data() < keywords_list.size());
+  const Keyword& k = keywords_list[(long)selected_kwd->user_data()];
+  Domain *d = (Domain *)selected_domain->user_data();
+  assert(d != NULL);
+
+  progress_bar->minimum(0);
+  progress_bar->maximum(d->engines().size() * 100);
+  progress_bar->value(0);
+  progress_wnd->show();
+  std::thread updater_thread(&RankTrackerUI::refresh_keyword, this);
+  updater_thread.detach();
+} else if(selected_domain != nullptr) {
+  if(selected_domain == tree->root()) {
+    // update all domains in the crt category
+    try {
+      create_transaction trans(&db, MDB_RDONLY);
+      size_t max = 0;
+      for(auto &d: domains_list) {
+        max += 100 * d.engines().size() * db.countKeywords(d);
+      }
+      trans.commit();
+      progress_bar->minimum(0);
+      progress_bar->maximum(max);
+      progress_bar->value(0);
+      progress_wnd->show();
+      std::thread updater_thread(&RankTrackerUI::refresh_crt_domain_list, this);
+      updater_thread.detach();
+    } catch (...) {
+      fl_alert("Failed to update the domain");
+    }
+  } else {
+    // update single domain
+    Domain *d = (Domain *)selected_domain->user_data();
+    assert(d != NULL);
+
+    try {
+      create_transaction trans(&db, MDB_RDONLY);
+      size_t ks = db.countKeywords(*d);
+      trans.commit();
+      progress_bar->minimum(0);
+      progress_bar->maximum(ks * d->engines().size() * 100);
+      progress_bar->value(0);
+      progress_wnd->show();
+      std::thread updater_thread(&RankTrackerUI::refresh_domain, this);
+      updater_thread.detach();
+    } catch (...) {
+      fl_alert("Failed to update the domain");
+    }
+  }
+} else {
+  fl_alert("Nothing to refresh");
+}}
+          comment {Refresh button}
+          private tooltip {Update Selection} image {../img/Refresh.png} xywh {105 15 40 40} box THIN_UP_BOX deactivate
+          code0 {\#include <FL/fl_ask.H>}
+          code1 {\#include "ranking.hh"}
+          code2 {\#include <thread>}
+        }
+        Fl_Button button_settings {
+          callback {user_action = ACTION_EDIT;
+
+switch(current_selection) {
+case CRT_NONE:
+case CRT_ALL:
+  break;
+case CRT_DOMAIN:
+  domain_settings_dlg->show();
+  break;
+case CRT_CATEGORY:
+  category_name->value(categories_list[categories->value()].name().c_str());
+  category_settings_dlg->show();
+  break;
+case CRT_KEYWORD:
+  keyword_settings_dlg->show();
+  break;
+}}
+          comment {Settings button}
+          private tooltip Settings image {../img/Settings.png} deimage {../img/Settings-inactive.png} xywh {150 15 40 40} box THIN_UP_BOX
+          code0 {button_settings->deactivate();}
+        }
+        Fl_Group {} {
+          comment {Resizable, invisible group prevents buttons resizing on window resize.} open
+          xywh {195 20 15 20} resizable
+        } {}
+        Fl_Box {} {
+          image {../img/SEOLeeds-small.jpg} xywh {738 15 68 42}
+        }
+      }
+      Fl_Tile main_area {
+        comment {Tile tree and details view} open
+        xywh {10 60 805 580} labeltype NO_LABEL resizable
+      } {
+        Fl_Group {} {
+          comment {The tree view}
+          xywh {10 60 255 580} labeltype NO_LABEL
+        } {
+          Fl_Choice categories {
+            callback {selected_category_idx = categories->value();
+tree->root()->clear_children();
+keywords_list.clear();
+if(selected_domain != tree->root()) {
+  selected_domain = nullptr;
+  button_refresh->deactivate();
+}
+
+selected_kwd = nullptr;
+
+ranktracker::persistence::create_transaction transaction(&db, MDB_RDONLY);
+
+domains_list = db.domains(categories_list[selected_category_idx]);
+update_domains_tree();
+transaction.commit();
+
+tree->show_item_top(tree->root());}
+            xywh {10 60 255 25} down_box BORDER_BOX labeltype NO_LABEL when 1
+            code0 {\#include "widgets.hh"}
+            code1 {categories->controller(this);}
+            class {ranktracker::ui::Categories}
+          } {}
+          Fl_Tree tree {
+            callback {BOOST_LOG_TRIVIAL(trace) << "tree selection changed\\n";
+update_current_selection_for_tree();}
+            xywh {10 85 255 555} resizable
+            code0 {\#include "widgets.hh"}
+            code1 {tree->controller(this);}
+            code2 {tree->root_label("All");}
+            class {ranktracker::ui::Domains}
+          }
+        }
+        Fl_Wizard details_view {
+          comment {The details view} open
+          xywh {265 60 550 580} box NO_BOX labeltype NO_LABEL
+          code0 {\#include "ranks_chart.hh"}
+          code1 {\#include <sstream> /* to format display strings */}
+        } {
+          Fl_Group no_view {open
+            xywh {265 60 545 580} box THIN_UP_BOX hide
+          } {}
+          Fl_Tile summary_table_view {open
+            xywh {265 60 545 580} hide
+          } {
+            Fl_Table summary_table {
+              user_data this
+              callback summary_table_click_cb open
+              xywh {265 60 545 480}
+              code0 {\#include "domain_summary_table.hh"}
+              class {ranktracker::ui::DomainSummaryTable}
+            } {}
+            Fl_Table summary_details_table {
+              user_data {(void *)summary_details_table}
+              callback {// save col width on resize
+Fl_Table * t = (Fl_Table *)v;
+int col;
+std::ostringstream colk;
+
+switch(t->callback_context()) {
+case Fl_Table::CONTEXT_RC_RESIZE:
+  col = t->callback_col();
+  colk << "chart_details_table_col_width_" << col;
+  set_int_pref(colk.str().c_str(), t->col_width(col));
+  break;
+default:
+  break;
+}}
+              xywh {265 540 545 100} when 1
+              code0 {\#include "rank_url_table.hh"}
+              code1 {setup_chart_details_table(summary_details_table);}
+              class {ranktracker::ui::RankURLTable}
+            } {}
+          }
+          Fl_Pack chart_view {open
+            xywh {265 60 545 580} box THIN_DOWN_FRAME
+          } {
+            Fl_Output out_crtkwd {
+              xywh {265 60 545 24} color 47
+            }
+            Fl_Tile {} {open
+              xywh {265 85 545 555} resizable
+            } {
+              Fl_Box chart {
+                user_data this
+                callback chart_click_cb selected
+                xywh {265 85 545 455}
+                code0 {chart->widths(65, 20, 20, 20);}
+                code1 {chart->vertical_grid(true); chart->horizontal_grid(true);}
+                class {ranktracker::ui::RanksChart<ranktracker::data::Ranking>}
+              }
+              Fl_Table chart_details_table {
+                user_data {(void *)chart_details_table}
+                callback {// save col width on resize
+Fl_Table * t = (Fl_Table *)v;
+int col;
+std::ostringstream colk;
+
+switch(t->callback_context()) {
+case Fl_Table::CONTEXT_RC_RESIZE:
+  col = t->callback_col();
+  colk << "chart_details_table_col_width_" << col;
+  set_int_pref(colk.str().c_str(), t->col_width(col));
+  break;
+default:
+  break;
+}}
+                xywh {265 540 545 100} when 1
+                code0 {\#include "rank_url_table.hh"}
+                code1 {setup_chart_details_table(chart_details_table);}
+                class {ranktracker::ui::RankURLTable}
+              } {}
+            }
+          }
+        }
+      }
+    }
+    code {details_view->value(no_view);} {}
+    code {// -*- mode:prog -*-
+int appw = get_int_pref("main_window_w");
+BOOST_LOG_TRIVIAL(trace) << "loading saved window w: " << appw << std::endl;
+int apph = get_int_pref("main_window_h");
+BOOST_LOG_TRIVIAL(trace) << "loading saved window h: " << apph << std::endl;
+
+if(appw && apph) {
+  app->size(appw, apph);
+}} {}
+    code {// -*- mode:prog -*-
+int catex = get_int_pref("categories_end_x");
+BOOST_LOG_TRIVIAL(trace) << "loading categories x end point" << catex;
+if(catex > 0) {
+  BOOST_LOG_TRIVIAL(trace) << "apply catex";
+  main_area->position(categories->x() + categories->w(), 0, catex, 0);
+} else {
+  BOOST_LOG_TRIVIAL(trace) << "using default catex";
+}} {}
+    Fl_Window about_dlg {
+      private xywh {22 433 636 376} type Double hide
+    } {
+      Fl_Box {} {
+        image {../img/SEO Leeds-120.jpg} xywh {253 32 130 78}
+      }
+      Fl_Output {} {
+        xywh {55 145 565 210} type Multiline box NO_BOX labeltype NO_LABEL textfont 4 textsize 12
+        code0 {o->value("          Brand That Name Google Rank Checker V 1.0\\n"
+"\\n"
+"Brand That Name are one of the top ranked SEO agencies in the UK.\\n"
+"\\n"
+"For Local or National SEO services anywhere in the UK, please visit:\\n"
+"\\n"
+"brandthatname.com\\n"
+"\\n"
+"Brand That Name,\\n"
+"38 North Ln,\\n"
+"Oulton, Leeds,\\n"
+"LS26 8TQ\\n"
+"0113 868 0811\\n"
+"\\n"
+"Brand That Name Rank Checker is software owned by Brand That Name Limited.\\n"
+"\\n"
+"Brand That Name Limited is Registered in England. Company Number 10152116\\n"
+"\\n"
+"© 2020 Brand That Name Limited\\n");}
+      }
+    }
+    code {fl_mac_set_about(&show_about_dlg, about_dlg);} {}
+    Fl_Window category_settings_dlg {
+      label Category
+      private xywh {660 412 409 112} type Double hide
+    } {
+      Fl_Input category_name {
+        label {Category Name}
+        private xywh {15 31 380 24} align 5
+      }
+      Fl_Return_Button {} {
+        label Ok
+        callback {using namespace ranktracker::data;
+
+const char *cname = category_name->value();
+if(cname && cname[0]) {
+  switch(user_action) {
+  case ACTION_ADD:
+    categories->add(cname);
+    categories_list.emplace_back(cname);
+    {
+      ranktracker::persistence::create_transaction trans(&db);
+      db.storeCategory(categories_list.back());
+      trans.commit();
+    }
+    // select current category in the categories menu
+    selected_category_idx = categories_list.size() - 1;
+    categories->value(selected_category_idx);
+    tree->root()->clear_children();
+    keywords_list.clear();
+    if(selected_domain != tree->root()) {
+       selected_domain = nullptr;
+       button_refresh->deactivate();
+    }
+    selected_kwd = nullptr;
+    tree->show_item_top(tree->root());
+
+    break;
+  case ACTION_EDIT:
+    {
+      int i = categories->value();
+      categories->replace(i, cname);
+      categories->redraw(); // to update the selected item
+      Category& c = categories_list[i];
+      c.name(cname);
+      {
+        ranktracker::persistence::create_transaction trans(&db);
+        db.storeCategory(c);
+        trans.commit();
+      }
+    }
+    break;
+  case ACTION_NONE:
+  default:
+    break;
+  }
+}
+
+category_settings_dlg->hide();}
+        xywh {330 75 65 25}
+      }
+      Fl_Button {} {
+        label Cancel
+        callback {category_settings_dlg->hide();}
+        xywh {255 75 65 25}
+      }
+    }
+    Fl_Window domain_settings_dlg {
+      label Domains
+      private xywh {542 134 429 417} type Double hide
+    } {
+      Fl_Input domain_name {
+        label {Domain Name}
+        private xywh {15 31 400 24} align 5
+      }
+      Fl_Text_Editor {} {
+        label Keywords
+        xywh {15 77 400 136} align 5
+        code0 {domain_keywords = new Fl_Text_Buffer();}
+        code1 {o->buffer(domain_keywords);}
+      }
+      Fl_Browser domain_engines {
+        label {Search Engines}
+        private xywh {15 235 280 125} type Hold align 5
+      }
+      Fl_Menu_Button domain_add_engine_btn {
+        label {Add engine}
+        user_data domain_engines open
+        xywh {305 235 110 25}
+      } {}
+      Fl_Button {} {
+        label {Remove engine}
+        callback {if(domain_engines->value() > 0) {
+  domain_engines->remove(domain_engines->value());
+}}
+        xywh {305 265 110 25}
+      }
+      Fl_Return_Button {} {
+        label Ok
+        callback {using namespace ranktracker::engine;
+using namespace ranktracker::persistence;
+const char *dname = domain_name->value();
+engines_set selected_engines;
+for(int i = 1; i <= domain_engines->size(); i++) {
+  selected_engines.emplace((SearchEngine *)domain_engines->data(i));
+}
+
+switch(user_action) {
+case ACTION_NONE:
+  break;
+case ACTION_ADD:
+  {
+    domains_list.emplace_back(dname, std::move(selected_engines));
+    const ranktracker::data::Domain& d = domains_list.back();
+    Fl_Tree_Item* item = tree->add(tree->root(), d.name().c_str()) ;
+    item->user_data((void *)&d);
+    tree->show_item_bottom(item);
+    try {
+      {
+        create_transaction trans(&db);
+        db.storeDomain(d, categories_list[selected_category_idx]);
+        std::unique_ptr<char, std::function<decltype(std::free)>>
+          bulk_kwds(domain_keywords->text(), std::free);
+        db.store_bulk_keywords(d, bulk_kwds.get());
+        trans.commit();
+      }
+      tree->root()->clear_children();
+      keywords_list.clear();
+      if(selected_domain != tree->root()) {
+        selected_domain = nullptr;
+        button_refresh->deactivate();
+      }
+      selected_kwd = nullptr;
+      try {
+        ranktracker::persistence::create_transaction transaction(&db, MDB_RDONLY);
+        update_domains_tree();
+        transaction.commit();
+        tree->show_item_top(tree->root());
+      } catch (...) {
+        fl_alert("Domain saved but an error occured while redisplaying the domains. Please retry.");
+      }
+    } catch (...) {
+      fl_alert("An error occured and the domain could not be saved to the database");
+    }
+  }
+  break;
+case ACTION_EDIT:
+  break;
+}
+domain_settings_dlg->hide();}
+        xywh {350 375 65 25}
+        code0 {\#include <memory>}
+        code1 {\#include <cstdlib>}
+      }
+      Fl_Button {} {
+        label Cancel
+        callback {domain_settings_dlg->hide();}
+        xywh {276 375 65 25}
+      }
+    }
+    Fl_Window keyword_settings_dlg {
+      label Keyword
+      private xywh {685 260 439 254} type Double hide
+    } {
+      Fl_Text_Editor {} {
+        label {Keyword(s):}
+        xywh {25 25 400 180} align 5
+        code0 {keyword_keywords = new Fl_Text_Buffer();}
+        code1 {o->buffer(keyword_keywords);}
+      }
+      Fl_Return_Button {} {
+        label Ok
+        callback {using namespace ranktracker::data;
+switch(user_action) {
+case ACTION_NONE:
+  break;
+case ACTION_ADD:
+ try {
+
+
+    assert(selected_domain != NULL);
+    Domain *d = (Domain *)selected_domain->user_data();
+    assert(d != NULL);
+
+    ranktracker::persistence::create_transaction trans(&db);
+    std::unique_ptr<char, std::function<decltype(std::free)>>
+      kwds(keyword_keywords->text(), std::free);
+
+    std::istringstream kwds_stream(kwds.get());
+    std::string kwd_value;
+    while(std::getline(kwds_stream, kwd_value)) {
+      boost::algorithm::trim(kwd_value);
+      if(kwd_value.size() > 0) {
+        keywords_list.emplace_back(kwd_value);
+        Keyword& kwd = keywords_list.back();
+        Fl_Tree_Item * i = tree->add(selected_domain, kwd_value.c_str());
+        i->user_data((void *)(keywords_list.size() - 1));
+        db.storeKeyword(kwd, *d);
+        tree->show_item_middle(i);
+      }
+    }
+    trans.commit();
+    update_current_selection_for_tree();
+
+  } catch (...) {
+    fl_alert("Failed to add the keywords");
+  }
+  break;
+case ACTION_EDIT:
+  break;
+}
+
+keyword_settings_dlg->hide();}
+        xywh {360 215 65 25}
+        code0 {\#include <FL/fl_ask.H>}
+        code1 {\#include <boost/algorithm/string/trim.hpp>}
+      }
+      Fl_Button {} {
+        label Cancel
+        callback {keyword_settings_dlg->hide();}
+        xywh {285 215 65 25}
+      }
+    }
+    code {selected_domain = NULL;
+selected_kwd = NULL;} {}
+    code {for(auto it = categories_list.cbegin(); it < categories_list.end(); it++) {
+  categories->add(it->name().c_str());
+}} {}
+    code {categories->value(selected_category_idx);} {}
+    code {current_selection = CRT_NONE;} {}
+    code {user_action = ACTION_NONE;} {}
+    code {update_domains_tree();} {}
+    code {transaction.commit();} {}
+    code {summary_table->database(&db);} {}
+    Fl_Window progress_wnd {
+      label Progress
+      private xywh {429 290 573 81} type Double hide modal
+    } {
+      Fl_Progress progress_bar {
+        label {working...}
+        xywh {18 29 536 35}
+      }
+    }
+  }
+  Function {~RankTrackerUI()} {} {
+    code {// -*- mode:prog -*-
+BOOST_LOG_TRIVIAL(trace) << "~RankTrackerUI() enter";
+delete domain_keywords;
+delete keyword_keywords;
+
+BOOST_LOG_TRIVIAL(trace) << "saving window's w: " << app->w() << std::endl;
+set_int_pref("main_window_w", app->w());
+BOOST_LOG_TRIVIAL(trace) << "saving window's h: " << app->h() << std::endl;
+set_int_pref("main_window_h", app->h());
+
+BOOST_LOG_TRIVIAL(trace) << "saving categories end x point: " << categories->x() + categories->w();
+set_int_pref("categories_end_x", categories->x() + categories->w());
+
+BOOST_LOG_TRIVIAL(trace) << "~RankTrackerUI() exit";} {}
+  }
+  Function {show(int argc, char **argv)} {
+    comment {Display main window}
+  } {
+    code {app->show(argc, argv);} {}
+  }
+  Function {onWidgetFocus(Fl_Widget *w)} {
+    comment {sets the current settings window based on
+the focused widget} private return_type void
+  } {
+    code {if(w == categories) {
+  current_selection = CRT_CATEGORY;
+  assert(button_settings != NULL);
+  button_settings->activate();
+  assert(button_refresh != NULL);
+  assert(tree != NULL);
+  if(tree->first_selected_item() == nullptr) {
+    button_refresh->deactivate();
+  }
+} else if(w == tree) {
+  update_current_selection_for_tree();
+}} {}
+  }
+  Function {update_domains_tree()} {
+    comment {Updates the tree of domains to match
+the domains loaded in domains_list.} private return_type void
+  } {
+    code {// -*- mode:prog -*-
+Fl_Tree_Item *tree_root = tree->root();
+for(auto d = domains_list.cbegin(); d < domains_list.cend(); d++) {
+  Fl_Tree_Item* ditem = tree->add(tree_root, d->name().c_str());
+  ditem->user_data((void *)&(*d));
+  auto dks = db.keywords(*d);
+  for(auto kwd = dks.cbegin(); kwd < dks.cend(); kwd++) {
+    Fl_Tree_Item* kwd_item = tree->add(ditem, kwd->value().c_str());
+    keywords_list.push_back(*kwd);
+    kwd_item->user_data((void *)(keywords_list.size() - 1));
+    kwd_item->close();
+  }
+  ditem->close();
+}} {}
+  }
+  Function {update_current_selection_for_tree()} {
+    comment {current_selection indicates the dlg window
+should be opened for add and settings btns;
+on the tree, decide whether domains dlg or
+keywords dlg should be opened} open private return_type void
+  } {
+    code {// -*- mode:prog -*-
+using namespace ranktracker::data;
+
+BOOST_LOG_TRIVIAL(trace) << "update_current_selection_for_tree() called\\n";
+
+assert(button_settings != NULL);
+assert(button_refresh != NULL);
+Fl_Tree_Item *i = tree->first_selected_item();
+static Ranking b;
+
+if(i == nullptr) {
+  BOOST_LOG_TRIVIAL(trace) << "update_current_selection_for_tree() no item selected\\n";
+  current_selection = CRT_NONE;
+  button_settings->deactivate();
+  button_refresh->deactivate();
+  selected_domain = nullptr;
+  selected_kwd = nullptr;
+  details_view->value(no_view);
+} else if(i == tree->root()) {
+  BOOST_LOG_TRIVIAL(trace) << "update_current_selection_for_tree() no view for root\\n";
+  current_selection = CRT_ALL;
+  button_settings->deactivate();
+  button_refresh->activate();
+  selected_domain = i;
+  selected_kwd = nullptr;
+  details_view->value(no_view);
+} else {
+  button_settings->activate();
+  button_refresh->activate();
+
+  if(i->parent() == tree->root()) {
+    selected_domain = i;
+    selected_kwd = nullptr;
+    BOOST_LOG_TRIVIAL(trace) << "update_current_selection_for_tree() display summary table for crt domain\\n";
+    summary_table->domain((ranktracker::data::Domain *)selected_domain->user_data());
+    summary_details_table->rows(0);
+    summary_details_table->rank_info(nullptr);
+    details_view->value(summary_table_view);
+    current_selection = CRT_DOMAIN;
+  } else if(i->parent() && i->parent()->parent() == tree->root()) {
+    selected_domain = i->parent();
+    assert(selected_domain != nullptr);
+    auto d = (Domain *)selected_domain->user_data();
+    assert(d != nullptr);
+
+    selected_kwd = i;
+    current_selection = CRT_KEYWORD;
+    BOOST_LOG_TRIVIAL(trace) << "update_current_selection_for_tree() display chart for current keyword\\n";
+
+    assert((long)selected_kwd->user_data() >= 0);
+    assert((long)selected_kwd->user_data() < keywords_list.size());
+    auto const &k = keywords_list[(long)selected_kwd->user_data()];
+
+    load_chart_data();
+    chart_details_table->rows(0);
+    chart_details_table->rank_info(nullptr);
+    if(d->engines().empty()) {
+      BOOST_LOG_TRIVIAL(trace) << "current domain has no engine defined";
+      chart_details_table->best_rank_info(nullptr);
+    } else {
+      try {
+        BOOST_LOG_TRIVIAL(trace) << "computing best ranking";
+        auto const &e = *d->engines().begin();
+        ranktracker::persistence::create_transaction trans(&db, MDB_RDONLY);
+        b = db.best_ranking(k, *e);
+        chart_details_table->best_rank_info(&b);
+        trans.commit();
+      } catch (...) {
+        BOOST_LOG_TRIVIAL(warning) << "could not compute the best ranking";
+        chart_details_table->best_rank_info(nullptr);
+      }
+    }
+    details_view->value(chart_view);
+
+    std::ostringstream chart_title;
+    chart_title << "(" << d->name() << ") " << k.value();
+    out_crtkwd->value(chart_title.str().c_str());
+
+  } else {
+    BOOST_LOG_TRIVIAL(error) << "Warning: unexpected tee level\\n";
+    selected_domain = nullptr;
+    selected_kwd = nullptr;
+    current_selection = CRT_NONE;
+    button_settings->deactivate();
+    button_refresh->deactivate();
+    details_view->value(no_view);
+  }
+}} {}
+  }
+  decl {Fl_Tree_Item *selected_domain;} {
+    comment {the domain currently selected in the ui tree} private local
+  }
+  decl {Fl_Tree_Item *selected_kwd;} {
+    comment {currently selected keyword in the tree} private local
+  }
+  Function {load_chart_data()} {open return_type void
+  } {
+    code {// -*- mode: prog -*-
+BOOST_LOG_TRIVIAL(trace) << "load_chart_data() called\\n";
+chart->clear();
+
+using namespace ranktracker::persistence;
+using namespace ranktracker::data;
+
+auto d = (Domain *)selected_domain->user_data();
+assert(d != nullptr);
+
+if(!d->engines().empty()) {
+  BOOST_LOG_TRIVIAL(trace) << "load_chart_data() assert the selected kwd inex is less than the keywords list size\\n";
+  assert((long)selected_kwd->user_data() < keywords_list.size());
+
+  auto const &k = keywords_list[(long)selected_kwd->user_data()];
+  auto const &e = *d->engines().begin();
+  try {
+    BOOST_LOG_TRIVIAL(trace) << "load_chart_data() load rankings\\n";
+    create_transaction trans(&db, MDB_RDONLY);
+    auto rs = db.rankings(k, *e);
+    BOOST_LOG_TRIVIAL(trace) << "load_chart_data() there are " << rs.size() << " rankings\\n";
+
+    if(rs.size() > 0) {
+      auto xoffset = rs[0]._ranking_date.time_of_day();
+      auto start_date = rs[0]._ranking_date - xoffset; // get the start of first day
+      chart->make_x_label_f(make_datetime_label(start_date));
+      chart->make_y_label_f(make_rank_label);
+      chart->closest_y_for_label(closest_int_rank);
+      chart->closest_x_for_label(closest_day_duration);
+
+      for(auto const &r: rs) {
+        std::ostringstream label;
+        label << "Rank: ";
+        if(r._rank > 0)
+          label << r._rank;
+        else
+          label << ">100";
+        label << "\\nDate: " << r._ranking_date;
+
+        BOOST_LOG_TRIVIAL(trace) << "load_chart_data() load ranking " << r._rank << " on " << label.str() << "\\n";
+        chart->add(ranktracker::ui::Chart_Entry<ranktracker::data::Ranking>(
+          (r._ranking_date - start_date).total_seconds(),
+          100 - (r._rank >= 0 ? r._rank:100),
+          label.str(),
+          r));
+      }
+      chart->miny(-10);
+      chart->maxy(102);
+      chart->minx(0);
+      chart->maxx(chart->maxx() + xoffset.total_seconds());
+
+    } else {
+      chart->miny(-10);
+      chart->maxy(102);
+      chart->minx(0);
+      chart->maxx(3600*24*365);
+    }
+    trans.commit();
+  } catch(...) {
+    fl_alert("An error occured while loading chart data");
+  }
+
+ }
+ BOOST_LOG_TRIVIAL(trace) << "load_chart_data() end\\n";} {}
+  }
+  decl {Fl_Text_Buffer *domain_keywords;} {
+    comment {The text buffer for keywords editor in domain settings dlg.} private local
+  }
+  Function {refresh_keyword()} {
+    comment {Refresh a keyword in a new thread} private return_type void
+  } {
+    code {// -*- mode: prog -*-
+using namespace ranktracker::data;
+using namespace ranktracker::ranking;
+
+BOOST_LOG_TRIVIAL(trace) << "refresh_keyword() enter\\n";
+
+assert(selected_domain != NULL);
+assert(selected_domain != tree->root());
+
+assert((long)selected_kwd->user_data() >= 0);
+assert((long)selected_kwd->user_data() < keywords_list.size());
+const Keyword& k = keywords_list[(long)selected_kwd->user_data()];
+Domain *d = (Domain *)selected_domain->user_data();
+assert(d != NULL);
+
+ranktracker::controller::progress_bar_updater<Fl_Progress> bar_updater(progress_bar);
+ranktracker::progress::progress_updater bar_updater_f(bar_updater);
+
+bool resize_retried = false;
+retry_refresh:
+try {
+  ranktracker::persistence::create_transaction trans(&db);
+  BOOST_LOG_TRIVIAL(trace) << "refresh_keyword() calling ranking service\\n";
+  ranking_service.refresh_ranking(k, *d, bar_updater_f);
+  BOOST_LOG_TRIVIAL(trace) << "refresh_keyword() ranking service returned\\n";
+  trans.commit();
+} catch (ranktracker::persistence::DatabaseMapFullException e) {
+  if(resize_retried) {
+    BOOST_LOG_TRIVIAL(error) << "DatabaseMapFullException raised after resizing on refresh keyword operation; giving up.";
+  } else {
+    try {
+      BOOST_LOG_TRIVIAL(warning) << "Database map is full on refresh operation. Resizing the database and than retrying the refresh keyword operation.";
+      db.increase_mapsize();
+      resize_retried = true;
+      BOOST_LOG_TRIVIAL(info) << "Database map resized successfully. Retrying the refresh keyword operation.";
+      goto retry_refresh;
+    } catch (...) {
+      BOOST_LOG_TRIVIAL(error) << "Failed to increase database map size. Giving up on refresh keyword operation.";
+    }
+  }
+} catch (...) {
+  BOOST_LOG_TRIVIAL(error) << "Updating the keyword failed";
+}
+Fl::awake(ranktracker::controller::hide_window_callback, progress_wnd);
+Fl::awake(load_chart_data_cb, this);
+
+BOOST_LOG_TRIVIAL(trace) << "refresh_keyword() exit\\n";} {}
+  }
+  Function {refresh_domain()} {
+    comment {Refresh all keywords of a Domain} return_type void
+  } {
+    code {// -*- mode: prog -*-
+using namespace ranktracker::data;
+using namespace ranktracker::ranking;
+
+BOOST_LOG_TRIVIAL(trace) << "refresh_domain() enter\\n";
+
+Domain *d = (Domain *)selected_domain->user_data();
+assert(d != NULL);
+
+ranktracker::controller::progress_bar_updater<Fl_Progress> bar_updater(progress_bar);
+ranktracker::progress::progress_updater bar_updater_f(bar_updater);
+
+bool resize_retried = false;
+retry_refresh:
+try {
+  ranktracker::persistence::create_transaction trans(&db);
+  BOOST_LOG_TRIVIAL(trace) << "refresh_domain() calling ranking_service\\n";
+  ranking_service.refresh_ranking(*d, bar_updater_f);
+  BOOST_LOG_TRIVIAL(trace) << "refresh_domain() ranking_service returned\\n";
+  trans.commit();
+} catch (ranktracker::persistence::DatabaseMapFullException e) {
+  if(resize_retried) {
+    BOOST_LOG_TRIVIAL(error) << "DatabaseMapFullException raised after resizing on refresh domain operation; giving up.";
+  } else {
+    try {
+      BOOST_LOG_TRIVIAL(warning) << "Database map is full on refresh operation. Resizing the database and than retrying the refresh domain operation.";
+      db.increase_mapsize();
+      resize_retried = true;
+      BOOST_LOG_TRIVIAL(info) << "Database map resized successfully. Retrying the refresh domain operation.";
+      goto retry_refresh;
+    } catch (...) {
+      BOOST_LOG_TRIVIAL(error) << "Failed to increase database map size. Giving up on refresh domain operation.";
+    }
+  }
+} catch (...) {
+  BOOST_LOG_TRIVIAL(error) << "ERROR: failed updating the domain\\n";
+}
+
+Fl::awake(ranktracker::controller::hide_window_callback, progress_wnd);
+Fl::awake(refresh_summary_table_cb, summary_table);
+
+BOOST_LOG_TRIVIAL(trace) << "refresh_domain() exit\\n";} {}
+  }
+  Function {refresh_crt_domain_list()} {
+    comment {Refresh all Domains in hte crt domains list} return_type void
+  } {
+    code {// -*- mode: prog -*-
+BOOST_LOG_TRIVIAL(trace) << "refresh_crt_domain_list() enter\\n";
+
+ranktracker::controller::progress_bar_updater<Fl_Progress> bar_updater(progress_bar);
+ranktracker::progress::progress_updater bar_updater_f(bar_updater);
+
+bool resize_retried = false;
+retry_refresh:
+try {
+  ranktracker::persistence::create_transaction trans(&db);
+  BOOST_LOG_TRIVIAL(trace) << "refresh_crt_domain_list() calling ranking service\\n";
+  ranking_service.refresh_ranking(domains_list, bar_updater_f);
+  BOOST_LOG_TRIVIAL(trace) << "refresh_crt_domain_list() ranking service returned\\n";
+  trans.commit();
+} catch (ranktracker::persistence::DatabaseMapFullException e) {
+  if(resize_retried) {
+    BOOST_LOG_TRIVIAL(error) << "DatabaseMapFullException raised after resizing on refresh domains list operation; giving up.";
+  } else {
+    try {
+      BOOST_LOG_TRIVIAL(warning) << "Database map is full on refresh operation. Resizing the database and than retrying the refresh domains list operation.";
+      db.increase_mapsize();
+      resize_retried = true;
+      BOOST_LOG_TRIVIAL(info) << "Database map resized successfully. Retrying the refresh domain operation.";
+      goto retry_refresh;
+    } catch (...) {
+      BOOST_LOG_TRIVIAL(error) << "Failed to increase database map size. Giving up on refresh domains list operation.";
+    }
+  }
+} catch (...) {
+  BOOST_LOG_TRIVIAL(error) << "ERROR: updating domains list failed";
+}
+Fl::awake(ranktracker::controller::hide_window_callback, progress_wnd);
+
+BOOST_LOG_TRIVIAL(trace) << "refresh_crt_domain_list() exit\\n";} {selected
+    }
+  }
+  decl {Fl_Text_Buffer *keyword_keywords;} {
+    comment {the text buffer for keywords settings dlg} private local
+  }
+  Function {setup_chart_details_table(Fl_Table *t)} {return_type void
+  } {
+    code {t->cols(6);} {}
+    code {t->rows(0);} {}
+    code {t->col_header(1); t->row_header(0);} {}
+    code {t->col_resize(1);} {}
+    code {// -*- mode:prog -*-
+// load saved col sizes
+for(int col=0; col < 6; col++) {
+  std::ostringstream colk;
+  colk << "chart_details_table_col_width_" << col;
+  int width = get_int_pref(colk.str().c_str());
+  if(width > 0) {
+    t->col_width(col, width);
+  }
+}} {}
+  }
+  decl {friend void summary_table_click_cb(Fl_Widget *w, void *data);} {private local
+  }
+  decl {friend void chart_click_cb(Fl_Widget *w, void *data);} {private local
+  }
+}
+
+class make_datetime_label {
+  comment {A function object converting an int to a
+date-time chart label}
+} {
+  decl {boost::posix_time::ptime _start_date;} {private local
+  }
+  Function {make_datetime_label(boost::posix_time::ptime start_date) : _start_date(start_date)} {} {
+    code {// -*- mode: prog -*-} {}
+  }
+  Function {operator() (int x)} {
+    comment {Formats x as a date time, adding x as seconds
+to the _start_date} open return_type {std::string}
+  } {
+    code {// -*- mode: prog -*-
+using boost::posix_time::seconds;
+std::ostringstream label;
+label << (_start_date + seconds(x)).date();
+return label.str();} {}
+  }
+}
+
+Function {make_rank_label(int y)} {
+  comment {writes 100 - y to the label} open return_type {std::string}
+} {
+  code {// -*- mode: prog -*-
+if(y<=0) {
+  return ">100";
+}
+std::ostringstream l;
+l << 100 - y;
+return l.str();} {}
+}
+
+Function {closest_day_duration(double secs)} {
+  comment {rounds the argument to the closest multiple
+of 3600} return_type double
+} {
+  code {// -*- mode:prog -*-
+return 24*3600*(ceil(secs/3600/24));} {}
+}
+
+Function {closest_int_rank(double y)} {
+  comment {returns the closest integer} return_type double
+} {
+  code {// -*- mode:prog -*-
+if(y<0) return 0;
+double _y = 10*ceil(y/10);
+return _y > 99 ? 99:_y;} {}
+}
+
+Function {summary_table_click_cb(Fl_Widget *w, void *data)} {
+  comment {Called when a cell in summary table was clicked} open return_type void
+} {
+  code {// -*- mode: prog -*-
+using namespace ranktracker::ui;
+BOOST_LOG_TRIVIAL(trace) << "summary table click";
+static Ranking r, p, b;
+
+DomainSummaryTable *summary = (DomainSummaryTable *)w;
+RankURLTable *tbl = ((RankTrackerUI *)data)->summary_details_table;
+auto &db = ((RankTrackerUI *)data)->db;
+
+switch(summary->callback_context()) {
+case Fl_Table::CONTEXT_ROW_HEADER:
+case Fl_Table::CONTEXT_CELL:
+  try {
+    int R = summary->callback_row();
+    const ranktracker::data::Keyword& k = summary->keyword(R);
+    const ranktracker::engine::SearchEngineRef& e = summary->engine(0);
+
+    create_transaction trans(&db, MDB_RDONLY);
+    r = db.last_ranking(k, *e);
+    tbl->rank_info(&r);
+    try {
+      db.diff_ranking(k, *e, nullptr, &p);
+      tbl->prev_rank_info(&p);
+    } catch (...) {
+      BOOST_LOG_TRIVIAL(warning) << "could not read prev diff";
+      tbl->prev_rank_info(nullptr);
+    }
+    try {
+      b = db.best_ranking(k, *e);
+      tbl->best_rank_info(&b);
+    } catch (...) {
+      BOOST_LOG_TRIVIAL(warning) << "could not compute best ranking";
+      tbl->best_rank_info(nullptr);
+    }
+
+    trans.commit();
+
+    tbl->rows(1);
+    tbl->redraw();
+  } catch (...) {
+    BOOST_LOG_TRIVIAL(warning) << "details could not be displayed for the selected summary table row";
+    tbl->rank_info(nullptr);
+    tbl->prev_rank_info(nullptr);
+    tbl->best_rank_info(nullptr);
+
+    tbl->rows(0);
+    tbl->redraw();
+  }
+
+  break;
+default:
+  break;
+}} {}
+}

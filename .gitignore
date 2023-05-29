@@ -1,0 +1,11 @@
+BRANCHES.md
+_darcs/
+src/ranktracker
+CR/
+CR.pdf
+CR.tex
+_boring
+\#*
+*~
+Project\ Status.numbers
+*.o
